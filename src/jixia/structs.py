@@ -1,7 +1,11 @@
 import json
 from collections.abc import Sequence
 from os import PathLike
-from typing import Optional, Literal, NamedTuple, Self, TypeVar, AnyStr, ClassVar, Any
+from typing import Optional, Literal, NamedTuple, TypeVar, AnyStr, ClassVar, Any
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self
 
 import pydantic
 from pydantic import ConfigDict, Field, model_validator, NonNegativeInt, TypeAdapter

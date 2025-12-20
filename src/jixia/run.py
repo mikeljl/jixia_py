@@ -12,7 +12,7 @@ from .structs import AnyPath, LeanName, Plugin, pp_name, is_prefix_of, plugin_sh
 
 logger = logging.getLogger(__name__)
 
-executable: AnyPath = "jixia"
+executable: AnyPath = "/local-scratch1/jla1045/jixia/.lake/build/bin/jixia"
 """path to jixia executable"""
 
 
@@ -118,6 +118,8 @@ class LeanProject:
         :return: a list of all (module, CompletedProcess | None) pairs
         """
         modules = self.find_modules(base_dir)
+        logger.info(f"Found {len(modules)} modules")
+        logger.info(f"Modules: {modules}")
         if prefixes is not None:
             modules = [m for m in modules if any(is_prefix_of(p, m) for p in prefixes)]
         self.output_dir.mkdir(exist_ok=True)
@@ -156,3 +158,99 @@ class LeanProject:
     def load_info(self, module: LeanName, cls: type[M]) -> list[M]:
         filename = f"{pp_name(module)}.{plugin_short_name(cls._plugin_name)}.json"
         return cls.from_json_file(self.output_dir / filename)
+
+
+def main():
+    """
+    CLI entry point for running jixia on a Lean project.
+    
+    Usage:
+        python -m jixia.run /path/to/project [prefix]
+    
+    Examples:
+        python -m jixia.run /local-scratch1/jla1045/mathlib4 Mathlib.Algebra.Group.Basic
+        python -m jixia.run /local-scratch1/jla1045/mathlib4 Mathlib.Algebra.Group
+    """
+    import sys
+    
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    
+    if len(sys.argv) < 2:
+        print("Usage: python -m jixia.run <project_root> [module_prefix]")
+        print("Example: python -m jixia.run /local-scratch1/jla1045/mathlib4 Mathlib.Algebra.AddConstMap.Basic")
+        sys.exit(1)
+    
+    root = Path(sys.argv[1])
+    prefix = sys.argv[2] if len(sys.argv) > 2 else None
+    
+    project = LeanProject(root=root)
+    project.output_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"Project: {project.root}")
+    print(f"Output:  {project.output_dir}")
+    
+    # Parse prefix to determine base_dir and module prefix
+    base_dir = None
+    prefixes = None
+    if prefix:
+        parts = tuple(prefix.split("."))
+        # First part is typically the library name (e.g., "Mathlib")
+        if (project.root / parts[0]).is_dir():
+            base_dir = project.root / parts[0]
+            prefixes = [parts[1:]] if len(parts) > 1 else None
+        else:
+            prefixes = [parts]
+    print(f"Prefix:  {prefixes}")
+    
+    # Run
+    results = project.batch_run_jixia(
+        base_dir=base_dir,
+        prefixes=prefixes,
+        plugins=ALL_PLUGINS,
+        run_initializers=True
+    )
+
+    successful = sum(1 for _, r in results if r is None or r.returncode == 0)
+    failed = len(results) - successful
+    print(f"\nDone: {successful} succeeded, {failed} failed")
+
+
+    import json
+    from jixia.structs import InfoTree, pp_name
+    from jixia.walk import collect_reference
+
+    # Process all modules that were successfully run
+    for module_name, result in results:
+        if result is not None and result.returncode != 0:
+            continue  # Skip failed modules
+        
+        try:
+            # Load elaboration trees
+            info_trees = project.load_info(module_name, InfoTree)
+            
+            # Collect all references from all trees
+            all_references = []
+            for tree in info_trees:
+                references = collect_reference(tree)
+                for byte_range, const_name in references:
+                    all_references.append({
+                        "reference_name": pp_name(const_name),
+                        "range": [byte_range.start, byte_range.stop]
+                    })
+
+
+            # Sort by range start
+            all_references.sort(key=lambda x: x["range"][0])
+            
+            # Save to JSON file
+            output_file = project.output_dir / f"{pp_name(module_name)}.reference.json"
+            with output_file.open("w") as fp:
+                json.dump(all_references, fp)
+            
+            logger.info(f"Saved {len(all_references)} references for {pp_name(module_name)}")
+        except Exception as e:
+            logger.error(f"Error processing references for {pp_name(module_name)}: {e}")
+
+
+if __name__ == "__main__":
+    main()
